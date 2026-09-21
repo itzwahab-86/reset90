@@ -68,6 +68,17 @@ body{
 }
 .top-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 
+.storage-status{
+  font-size:11px;
+  letter-spacing:.05em;
+  color:#b8b0a1;
+  margin-left:4px;
+  cursor:help;
+  user-select:none;
+}
+.storage-status.ok{color:var(--green);}
+.storage-status.bad{color:var(--accent);}
+
 .ghost{
   font-family:inherit;
   font-size:12px;
@@ -95,6 +106,20 @@ body{
   background:rgba(74,114,99,.08);
   color:var(--green);
 }
+
+/* ---------- storage warning banner ---------- */
+.storage-banner{
+  display:none;
+  background:rgba(185,85,58,.08);
+  border:1px solid rgba(185,85,58,.35);
+  color:var(--accent);
+  border-radius:7px;
+  padding:12px 18px;
+  font-size:13px;
+  line-height:1.5;
+}
+.storage-banner.on{display:block;}
+.storage-banner strong{font-weight:700;}
 
 /* ---------- cards ---------- */
 .card{
@@ -467,7 +492,6 @@ body{
 }
 .dot.on{background:var(--ink);border-color:var(--ink);}
 
-/* mood row */
 .mood-cell{
   display:flex;
   align-items:center;
@@ -559,12 +583,6 @@ body{
   border-radius:2px 2px 1px 1px;
 }
 .bar.alert{background:var(--accent);opacity:.85;}
-
-/* overflow marker: value exceeds chart display range */
-.bar.overflow{
-  border-top-left-radius:0;
-  border-top-right-radius:0;
-}
 .bar.overflow::after{
   content:'';
   position:absolute;
@@ -701,8 +719,16 @@ body{
       <button class="ghost primary" id="exportBtn">export</button>
       <button class="ghost" id="importBtn">import</button>
       <button class="ghost" id="clearBtn">start fresh</button>
+      <span class="storage-status" id="storageStatus" title="storage health">●</span>
     </div>
   </header>
+
+  <!-- ============ STORAGE WARNING BANNER ============ -->
+  <div class="storage-banner" id="storageBanner">
+    <strong>⚠ Storage is blocked.</strong>
+    Your data will <em>not</em> save between visits. This usually happens when the page is opened inside another app's built-in browser (Gmail, WhatsApp, Instagram, etc.).<br><br>
+    To fix: open Chrome → type the URL directly → menu (⋮) → <strong>Add to Home Screen</strong> → launch from the shortcut. Your data will persist from then on.
+  </div>
 
   <!-- ============ HERO ============ -->
   <section class="card hero">
@@ -912,7 +938,7 @@ const DEFAULT_HABITS = [
   'Sleep Target'
 ];
 
-/* chart display scales (max = full bar height) */
+/* chart display scales */
 const METRICS = {
   sleep : { min:0, max:12,  step:0.5,  unit:'h', target:7.5, goodHigh:true,
             axis:['0h','6h','12h'] },
@@ -926,14 +952,13 @@ const METRICS = {
             axis:['0m','90m','180m'] }
 };
 
-/* hard input constraints — physically meaningful limits.
-   values typed beyond these get clamped and a toast shows. */
+/* hard input constraints */
 const LIMITS = {
-  sleep : { min:0, max:24,   unit:'h',  label:'sleep'        },
-  screen: { min:0, max:24,   unit:'h',  label:'screen time'  },
-  deep  : { min:0, max:24,   unit:'h',  label:'deep work'    },
-  study : { min:0, max:24,   unit:'h',  label:'study'        },
-  gym   : { min:0, max:1440, unit:'m',  label:'gym'          }
+  sleep : { min:0, max:24,   unit:'h', label:'sleep'       },
+  screen: { min:0, max:24,   unit:'h', label:'screen time' },
+  deep  : { min:0, max:24,   unit:'h', label:'deep work'   },
+  study : { min:0, max:24,   unit:'h', label:'study'       },
+  gym   : { min:0, max:1440, unit:'m', label:'gym'         }
 };
 
 const STRIPS = {
@@ -945,6 +970,21 @@ const STRIPS = {
 
 const WINDOW_AXIS = ['9:00 PM','12:00 AM','6:00 AM','12:00 PM'];
 const MOOD_EMOJI = ['😞','😐','🙂','😄'];
+
+/* =========================================================
+   STORAGE AVAILABILITY CHECK
+   ========================================================= */
+function storageAvailable(){
+  try{
+    const t = '__reset_test__';
+    localStorage.setItem(t, '1');
+    localStorage.removeItem(t);
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+const STORAGE_OK = storageAvailable();
 
 /* =========================================================
    STATE
@@ -1030,7 +1070,6 @@ function normalizeState(parsed){
   if (parsed.metrics){
     for (const k in base.metrics){
       if (Array.isArray(parsed.metrics[k]) && parsed.metrics[k].length === DAYS){
-        /* clamp any imported metric to its limit */
         const lim = LIMITS[k];
         base.metrics[k] = parsed.metrics[k].map(v => {
           if (v == null) return null;
@@ -1054,12 +1093,29 @@ function loadState(){
     let raw = localStorage.getItem(KEY);
     if (!raw) raw = localStorage.getItem('reset90.v3');
     if (!raw) raw = localStorage.getItem('reset90.v2');
-    if (!raw) return demoState();
+
+    /* If nothing is saved yet, decide what to show.
+       - If storage is blocked → blank state (so the user clearly sees something's wrong)
+       - Otherwise → demo on the first ever visit, blank after that */
+    if (!raw){
+      if (!STORAGE_OK) return blankState();
+      try{
+        if (!localStorage.getItem('reset90.seen')){
+          localStorage.setItem('reset90.seen', '1');
+          return demoState();
+        }
+      }catch(e){ /* ignore */ }
+      return blankState();
+    }
+
     return normalizeState(JSON.parse(raw));
-  }catch(e){ return demoState(); }
+  }catch(e){
+    return blankState();
+  }
 }
 
 function save(){
+  if (!STORAGE_OK) return; // silent no-op when storage blocked
   try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){}
 }
 
@@ -1125,10 +1181,8 @@ function toast(msg, opts){
   toastTimer = setTimeout(() => toastEl.classList.remove('on'), 2400);
 }
 
-/* shake an input to signal rejection */
 function shakeInput(inp){
   inp.classList.remove('invalid');
-  /* force reflow to restart animation */
   void inp.offsetWidth;
   inp.classList.add('invalid');
   setTimeout(() => inp.classList.remove('invalid'), 400);
@@ -1479,7 +1533,7 @@ document.getElementById('toggleMoodBtn').addEventListener('click', () => {
 });
 
 /* =========================================================
-   BAR CHARTS (read-only, with overflow indicator)
+   BAR CHARTS
    ========================================================= */
 function renderBarChart(key){
   const cfg = METRICS[key];
@@ -1500,7 +1554,6 @@ function renderBarChart(key){
 
     if (v != null && v > 0){
       const ratio = v / cfg.max;
-      /* clamp bar height at 100% but flag overflow with a small marker */
       bar.style.height = Math.max(1.5, Math.min(100, ratio * 100)) + '%';
       if (ratio > 1) bar.classList.add('overflow');
       const off = cfg.goodHigh ? (v < cfg.target) : (v > cfg.target);
@@ -1520,7 +1573,7 @@ function renderBarChart(key){
 }
 
 /* =========================================================
-   TIME STRIPS (read-only)
+   TIME STRIPS
    ========================================================= */
 function renderStrip(key){
   const cfg = STRIPS[key];
@@ -1573,7 +1626,7 @@ function renderWindow(){
 }
 
 /* =========================================================
-   QUICK LOG  (with input constraints)
+   QUICK LOG
    ========================================================= */
 const QL_IDS = {
   sleep : 'ql-sleep',
@@ -1637,7 +1690,6 @@ function updateSleepHints(){
   }
 }
 
-/* read a numeric field, clamping to LIMITS and giving feedback */
 function readNum(id, key){
   const inp = document.getElementById(id);
   if (!inp) return null;
@@ -1669,7 +1721,6 @@ function readNum(id, key){
   return v;
 }
 
-/* read a time field from <input type="time"> */
 function readTime(id){
   const inp = document.getElementById(id);
   if (!inp || !inp.value) return null;
@@ -1683,7 +1734,6 @@ function readTime(id){
     return null;
   }
   let h = hh + mm / 60;
-  /* bedtime between midnight and noon means the previous evening */
   if (id === QL_IDS.bed && h < 12) h += 24;
   return h;
 }
@@ -1741,7 +1791,7 @@ document.querySelectorAll('#qlMood .mood-btn').forEach(btn => {
 });
 
 /* =========================================================
-   NOTE (with length cap)
+   NOTE
    ========================================================= */
 const NOTE_MAX = 5000;
 const noteArea = document.getElementById('noteArea');
@@ -1815,7 +1865,7 @@ function updateStats(){
 }
 
 /* =========================================================
-   EXPORT / IMPORT  (Android-optimized)
+   EXPORT / IMPORT
    ========================================================= */
 function exportData(){
   const payload = {
@@ -1918,6 +1968,29 @@ function renderAll(){
 }
 
 /* =========================================================
+   STORAGE STATUS INDICATOR
+   ========================================================= */
+function updateStorageStatus(){
+  const dot = document.getElementById('storageStatus');
+  const banner = document.getElementById('storageBanner');
+  if (!dot) return;
+
+  if (STORAGE_OK){
+    dot.classList.add('ok');
+    dot.classList.remove('bad');
+    dot.textContent = '●';
+    dot.title = 'storage: working — your data saves between visits';
+    if (banner) banner.classList.remove('on');
+  } else {
+    dot.classList.add('bad');
+    dot.classList.remove('ok');
+    dot.textContent = '● storage blocked';
+    dot.title = 'storage: BLOCKED — data will not persist';
+    if (banner) banner.classList.add('on');
+  }
+}
+
+/* =========================================================
    CONTROLS
    ========================================================= */
 document.getElementById('prevDay').onclick = () => {
@@ -1970,6 +2043,7 @@ window.addEventListener('resize', () => {
 
 /* go */
 renderAll();
+updateStorageStatus();
 </script>
 </body>
 </html>
